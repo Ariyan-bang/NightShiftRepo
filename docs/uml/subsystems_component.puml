@@ -1,0 +1,117 @@
+@startuml
+' ======================================================================
+' Meridian Platform -- UML 2.0 Component Diagram
+' 
+' Recovered directly from source code:
+'   1. ingest     (C / C99 / POSIX)        - ingest/src/
+'   2. analytics  (Python 3.8+)            - analytics/meridian/
+'   3. model      (FORTRAN / F77 & F90)    - model/
+'   4. services   (Java / JDK 8+)          - services/src/
+'   5. dashboard  (JS ES5 / jQuery + Node) - dashboard/
+'   6. ui-next    (TypeScript / React 18)  - ui-next/src/
+'   7. reporting  (Python 3.8+ / CLI)      - reporting/reporting/
+' ======================================================================
+
+!theme plain
+skinparam componentStyle uml2
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Arial, sans-serif
+skinparam defaultFontSize 11
+skinparam shadowing false
+skinparam roundCorner 6
+skinparam arrowThickness 1.5
+
+skinparam packageBorderColor #78909C
+skinparam packageBackgroundColor #FAFAFA
+skinparam packageFontStyle bold
+
+skinparam componentBorderColor #37474F
+skinparam componentBorderThickness 1.5
+skinparam componentBackgroundColor #FFFFFF
+
+skinparam databaseBorderColor #455A64
+skinparam databaseBackgroundColor #ECEFF1
+
+skinparam fileBorderColor #78909C
+skinparam fileBackgroundColor #FFFDE7
+
+title Meridian Platform -- UML Component Diagram\n(7 Subsystems | Languages | 1-Line Responsibilities | Exposed Interfaces | Control & Data Flows)
+
+legend top right
+  <b>Flow Types & Conventions</b>
+  <color:#1565C0><b>──></b></color> <b>Control Flow</b> (Invocation, Process Spawn, HTTP Dispatch)
+  <color:#2E7D32><b>- - ></b></color> <b>Data Flow</b> (Binary Frames, SQL Streams, Files, JSON Payloads)
+end legend
+
+top to bottom direction
+
+' External Actors & Artifacts
+actor "Telemetry Loggers /\nCron Trigger" as CronIngest
+actor "Cron Scheduler /\nBatch Operator" as CronBatch
+actor "Web Browser /\nOperator" as WebUser
+
+file "Telemetry Spool\n(spool_*.bin)" as Spool
+file "Audit Reports / CSV\n(stdout or file)" as AuditReports
+
+package "Ingestion & Persistent Store" {
+    component "<b>1. ingest</b>\n//Language: C (C99 / POSIX)//\n----\n<b>Responsibility:</b> Decodes/QC-validates 44-byte binary telemetry frames and appends readings to SQLite via popen('sqlite3').\n----\n<b>Exposed Interface:</b> CLI: mrd_ingest <spoolfile> <store.db>" as Ingest #E8F4F8
+
+    database "<b>meridian.db</b>\n//SQLite 3 Store//\n----\n* reading (telemetry time-series)\n* forecast (seasonal crop yield summaries)\n* forecast_daily (daily simulated curves)" as DB #ECEFF1
+}
+
+package "Numerical Simulation Tier" {
+    component "<b>2. analytics</b>\n//Language: Python (3.8+)//\n----\n<b>Responsibility:</b> Queries weather data, builds model decks, executes cropmod, and persists seasonal yield forecasts.\n----\n<b>Exposed Interface:</b> CLI: python run_forecast.py ~-~-db <path> ~-~-station <stn> ~-~-year <yr>" as Analytics #FFF3CD
+
+    file "<b>Scratch Workspace</b>\n//Fixed-Width ASCII Files//\n----\n* MERIDIAN.DAT (crop model input deck)\n* MERIDIAN.OUT (crop model output deck)" as Scratch #FFFDE7
+
+    component "<b>3. model</b>\n//Language: FORTRAN (F77 / F90)//\n----\n<b>Responsibility:</b> Simulates daily soil water balance and crop biomass growth until harvest using numerical equations.\n----\n<b>Exposed Interface:</b> Executable & File I/O: cropmod (reads MERIDIAN.DAT, writes MERIDIAN.OUT)" as Model #F8D7DA
+}
+
+package "Backend Services & Reporting" {
+    component "<b>4. services</b>\n//Language: Java (JDK 8+)//\n----\n<b>Responsibility:</b> Serves station telemetry and forecast data as JSON over HTTP with CORS via an embedded JDK HttpServer.\n----\n<b>Exposed Interface:</b> REST API: HTTP :8081 /api/{stations, forecast, series, summary, anomalies, export, health}" as Services #E2D9F3
+
+    component "<b>7. reporting</b>\n//Language: Python (3.8+)//\n----\n<b>Responsibility:</b> Generates formatted 80/132-column greenbar printouts and CSV data extracts directly from SQLite via read-only connections.\n----\n<b>Exposed Interface:</b> CLI: python -m reporting <report_type> ~-~-db <path> [-f csv|text] [-o file]" as Reporting #E8D5F5
+}
+
+package "Web Client Tier" {
+    component "<b>5. dashboard</b>\n//Language: JavaScript (ES5 / jQuery) + Node.js//\n----\n<b>Responsibility:</b> Renders a legacy browser console with hash routing, fetching API data via jQuery AJAX to display tables and bar charts.\n----\n<b>Exposed Interface:</b> Web UI: HTTP :8080 index.html (#stations, #forecast, #anomalies, #export)" as Dashboard #D2F4EA
+
+    component "<b>6. ui-next</b>\n//Language: TypeScript (React 18 / Vite)//\n----\n<b>Responsibility:</b> Renders a modern typed Single Page Application with client routing and SVG time-series visualization charts.\n----\n<b>Exposed Interface:</b> Web SPA: HTTP :5174 / (routes: /stations, /forecast, /health)" as UiNext #CFE2FF
+}
+
+' Layout alignment
+Ingest -[hidden]down-> Analytics
+Analytics -[hidden]down-> Services
+Services -[hidden]down-> Dashboard
+
+' Control Flows (Solid Blue)
+CronIngest   -[#1565C0,bold]-> Ingest    : <<control>> cron (15 min)
+Ingest       -[#1565C0,bold]-> DB        : <<control>> popen('sqlite3')
+CronBatch    -[#1565C0,bold]-> Analytics : <<control>> cron nightly
+Analytics    -[#1565C0,bold]-> Model     : <<control>> subprocess.run(['cropmod'])
+Model        -[#1565C0,bold]-> Analytics : <<control>> exit code 0
+CronBatch    -[#1565C0,bold]-> Services  : <<control>> start daemon :8081
+Services     -[#1565C0,bold]-> DB        : <<control>> ProcessBuilder sqlite3 -json
+CronBatch    -[#1565C0,bold]-> Reporting : <<control>> python -m reporting
+Reporting    -[#1565C0,bold]-> DB        : <<control>> connect mode=ro
+WebUser      -[#1565C0,bold]-> Dashboard : <<control>> :8080
+Dashboard    -[#1565C0,bold]-> Services  : <<control>> $.ajax()
+WebUser      -[#1565C0,bold]-> UiNext    : <<control>> :5174
+UiNext       -[#1565C0,bold]-> Services  : <<control>> fetch()
+
+' Data Flows (Dashed Green)
+Spool        -[#2E7D32,dashed]-> Ingest    : <<data>> 44-byte binary frames
+Ingest       -[#2E7D32,dashed]-> DB        : <<data>> INSERT INTO reading
+DB           -[#2E7D32,dashed]-> Analytics : <<data>> SELECT weather readings
+Analytics    -[#2E7D32,dashed]-> Scratch   : <<data>> writes MERIDIAN.DAT
+Scratch      -[#2E7D32,dashed]-> Model     : <<data>> reads MERIDIAN.DAT
+Model        -[#2E7D32,dashed]-> Scratch   : <<data>> writes MERIDIAN.OUT
+Scratch      -[#2E7D32,dashed]-> Analytics : <<data>> parses MERIDIAN.OUT
+Analytics    -[#2E7D32,dashed]-> DB        : <<data>> INSERT forecast tables
+DB           -[#2E7D32,dashed]-> Services  : <<data>> JSON stdout stream
+Services     -[#2E7D32,dashed]-> Dashboard : <<data>> HTTP JSON + CORS
+Services     -[#2E7D32,dashed]-> UiNext    : <<data>> HTTP JSON + CORS
+DB           -[#2E7D32,dashed]-> Reporting : <<data>> SELECT read-only
+Reporting    -[#2E7D32,dashed]-> AuditReports : <<data>> greenbar ASCII / CSV
+
+@enduml
