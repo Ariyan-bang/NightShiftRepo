@@ -126,10 +126,7 @@ note over Parser
   - YIELD split  -> 6.425 t/ha
 end note
 
-Parser --> Orchestrator : Return parsed ForecastResult\n<b>[Data Format: In-Memory Python Dataclasses / Dictionaries]</b>
-deactivate Parser
-
-Orchestrator -> Store : Persist seasonal forecast & daily series\n<b>[Data Format: Parameterized SQL INSERT via sqlite3]</b>\n- INSERT OR REPLACE INTO forecast VALUES ('GUELPH', 2025, '2025-05-01T04:00:00', 6.425, 180, 'cropmod V2.3');\n- INSERT OR REPLACE INTO forecast_daily VALUES ('GUELPH', 2025, 120, 182.40, 2.150, 0.000, 120.5, 0.450);
+Parser -> Store : Persist seasonal forecast & daily series\n<b>[Data Format: Parameterized SQL INSERT via sqlite3]</b>\n- INSERT OR REPLACE INTO forecast VALUES ('GUELPH', 2025, '2025-05-01T04:00:00', 6.425, 180, 'cropmod V2.3');\n- INSERT OR REPLACE INTO forecast_daily VALUES ('GUELPH', 2025, 120, 182.40, 2.150, 0.000, 120.5, 0.450);
 activate Store
 note over Store
   <b>Store (SQLite tables: forecast & forecast_daily)</b>
@@ -137,9 +134,12 @@ note over Store
   - forecast_daily: DOY 120 Soil Water = 182.40 mm
   - forecast: Final Yield = 6.425 t/ha
 end note
-Store --> Orchestrator : Commit complete
-deactivate Orchestrator
+Store --> Parser : Commit complete
 deactivate Store
+
+Parser --> Orchestrator : Return parsed ForecastResult\n<b>[Data Format: In-Memory Python Dataclasses / Dictionaries]</b>
+deactivate Parser
+deactivate Orchestrator
 
 == Phase 4: API Dispatch & Console Presentation ==
 
