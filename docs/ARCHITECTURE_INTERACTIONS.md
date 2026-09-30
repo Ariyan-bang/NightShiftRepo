@@ -215,6 +215,26 @@ sequenceDiagram
     end
 ```
 
+### 4.1 Whole-System End-to-End Trace: Guelph Field Reading to Console
+
+The dedicated UML sequence diagram ([docs/uml/end_to_end_trace.puml](file:///c:/Users/archo/CIS3250/meridian-archaeology/docs/uml/end_to_end_trace.puml), [PNG](file:///c:/Users/archo/CIS3250/meridian-archaeology/docs/uml/end_to_end_trace.png), [SVG](file:///c:/Users/archo/CIS3250/meridian-archaeology/docs/uml/end_to_end_trace.svg)) models the lifecycle of a single weather reading from field station **GUELPH** through the exact architectural hand-off path:
+`frame -> ingest -> store -> orchestrator -> model -> output -> parser -> store -> API -> console`
+
+#### Data Format Handoff Table
+
+| Step | From $\to$ To | Data Format / Protocol | Concrete Payload / Schema |
+|---|---|---|---|
+| **1. frame** | Field Station $\to$ Ingest | 44-byte Binary Big-Endian Frame (`packet.h`) | Magic `0x4D524431` ("MRD1"), Station `'GUELPH  '`, Year `2025`, DOY `120`, Channels $\times 100$: TMAX=1850 ($18.50^\circ\text{C}$), TMIN=620 ($6.20^\circ\text{C}$), RAIN=0 ($0.00\,\text{mm}$), SRAD=2240 ($22.40\,\text{MJ/m}^2$), RH=5500 ($55.0\%$), WIND=320 ($3.20\,\text{m/s}$), Flags `0x0000`, CRC16 `0x...` |
+| **2. ingest** | Ingest $\to$ Store | SQL text stream piped via `popen("sqlite3")` | `INSERT OR REPLACE INTO reading (stnid, year, doy, tmax, tmin, rain, srad, rh, wind, flags) VALUES ('GUELPH', 2025, 120, 18.50, 6.20, 0.00, 22.40, 55.00, 3.20, 0);` |
+| **3. store** | Store $\to$ Orchestrator | Python `sqlite3` cursor query / row tuples | `SELECT doy, tmax, tmin, rain, srad FROM reading WHERE stnid='GUELPH' AND year=2025 ORDER BY doy ASC;` $\to$ `(120, 18.50, 6.20, 0.00, 22.40)` |
+| **4. orchestrator** | Orchestrator $\to$ Model | Column-exact fixed-width ASCII input deck (`MERIDIAN.DAT`) | `GUELPH  2025  43.545`<br>`    0.15 1100.00`<br>`120  18.5   6.2   0.0 22.40`<br>` -1` |
+| **5. model** | Model $\to$ Output | Column-exact fixed-width ASCII output file (`MERIDIAN.OUT`) | `MERIDIAN CROPMOD V2.3  STN=GUELPH    YEAR=2025  NDAYS= 180`<br>` DOY      SW      ET   DRAIN    BIOM     LAI`<br>` 120  182.40   2.150   0.000   120.5   0.450`<br>`...`<br>`YIELD      6.425` |
+| **6. output** | Output $\to$ Parser | Raw text file / Fixed-column character slices | Column spans `[(0,4), (5,12), (13,20), (21,28), (29,36), (37,44)]` parsed to avoid whitespace split bugs (MRD-143). |
+| **7. parser** | Parser $\to$ Store | Parameterized SQL statements via Python `sqlite3` | `INSERT OR REPLACE INTO forecast_daily (stnid, year, doy, sw, et, drain, biom, lai) VALUES ('GUELPH', 2025, 120, 182.40, 2.150, 0.000, 120.5, 0.450);`<br>`INSERT OR REPLACE INTO forecast (stnid, year, run_at, yield_t, ndays, model) VALUES ('GUELPH', 2025, '2025-05-01T04:00:00', 6.425, 180, 'cropmod V2.3');` |
+| **8. store** | Store $\to$ API | JSON Array stream piped via `ProcessBuilder("sqlite3", "-json", ...)` | `[{"doy":120,"sw":182.40,"et":2.150,"drain":0.000,"biom":120.5,"lai":0.450}]` |
+| **9. API** | API $\to$ Console | HTTP Response (JSON + CORS headers) | HTTP 200 OK (`Content-Type: application/json`, `Access-Control-Allow-Origin: *`)<br>`[{"doy":120,"sw":182.40,"et":2.150,"drain":0.000,"biom":120.5,"lai":0.450}]` |
+| **10. console** | Console (Presentation) | DOM Table / Multi-Channel SVG Path | Rendered operator metrics: Soil Water at DOY 120 = **182.40 mm**, Final Yield = **6.425 t/ha**. |
+
 ---
 
 ## 5. Subsystem Deep Dives: Control & Data Contracts

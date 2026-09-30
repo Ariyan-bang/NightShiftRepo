@@ -1,0 +1,176 @@
+@startuml
+' ======================================================================
+' Meridian Platform -- End-to-End System Trace UML Sequence Diagram
+' Tracing one weather reading from Field Station GUELPH to the Console
+' Pipeline: frame -> ingest -> store -> orchestrator -> model -> output
+'           -> parser -> store -> API -> console
+' ======================================================================
+
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Arial, sans-serif
+skinparam defaultFontSize 11
+skinparam shadowing false
+skinparam roundCorner 6
+skinparam arrowThickness 1.5
+
+skinparam sequence {
+    ArrowColor #263238
+    ActorBorderColor #1565C0
+    ActorBackgroundColor #E3F2FD
+    ParticipantBorderColor #37474F
+    ParticipantBackgroundColor #FFFFFF
+    ParticipantFontSize 12
+    ParticipantFontStyle bold
+    DatabaseBorderColor #455A64
+    DatabaseBackgroundColor #ECEFF1
+    BoxBorderColor #90A4AE
+    BoxBackgroundColor #F5F7F8
+    LifeLineBorderColor #78909C
+    LifeLineBackgroundColor #CFD8DC
+    GroupBorderColor #546E7A
+    GroupBackgroundColor #FAFAFA
+    GroupHeaderFontStyle bold
+}
+
+title Meridian Platform -- End-to-End System Trace (Whole System)\nOne Weather Reading from Field Station GUELPH to Console\n(frame -> ingest -> store -> orchestrator -> model -> output -> parser -> store -> API -> console)
+
+autonumber 1 "<b>[00]</b>"
+
+' Participants in pipeline order
+actor "<b>Field Station</b>\n//Guelph Sensor//" as Station #E3F2FD
+queue "<b>frame</b>\n//Spool / Wire//" as Frame #ECEFF1
+participant "<b>ingest</b>\n//C99 (mrd_ingest)//" as Ingest #E8F4F8
+database "<b>store</b>\n//meridian.db (SQLite)//" as Store #ECEFF1
+participant "<b>orchestrator</b>\n//Python (run_forecast)//" as Orchestrator #FFF3CD
+participant "<b>model</b>\n//FORTRAN (cropmod)//" as Model #F8D7DA
+entity "<b>output</b>\n//Scratch File//" as Output #FFFDE7
+participant "<b>parser</b>\n//Python (parse.py)//" as Parser #FFF3CD
+participant "<b>API</b>\n//Java (ApiServer :8081)//" as API #E2D9F3
+participant "<b>console</b>\n//Operator Web UI//" as Console #D2F4EA
+
+== Phase 1: Telemetry Acquisition & Ingestion ==
+
+Station -> Frame : Telemetry sample logged\n<b>Format: Raw Sensor Voltages</b>
+activate Frame
+
+Frame -> Ingest : Read binary packet\n<b>[Data Format: 44-byte Binary Big-Endian Frame]</b>\n- Magic: 0x4D524431 ("MRD1") [bytes 0-3]\n- Station ID: "GUELPH  " (space-padded) [bytes 4-11]\n- Year: 2025, DOY: 120 [bytes 12-15]\n- Scaled (x100) channels: TMAX=1850 (18.5°C), TMIN=620 (6.2°C),\n  RAIN=0 (0.0mm), SRAD=2240 (22.4MJ), RH=5500 (55%), WIND=320 (3.2m/s)\n- Flags: 0x0000, CRC16-CCITT: 0x... [bytes 40-43]
+deactivate Frame
+activate Ingest
+
+note over Ingest
+  <b>Subsystem 1 (C99): Validation & Decode</b>
+  1. Verifies CRC16-CCITT checksum over bytes 0..41
+  2. Divides integer channels by 100.0 to restore physical units
+  3. Validates QC meteorological bounds (validate.c)
+end note
+
+Ingest -> Store : Append reading via popen("sqlite3")\n<b>[Data Format: SQL text stream via pipe]</b>\nINSERT OR REPLACE INTO reading (stnid, year, doy, tmax, tmin, rain, srad, rh, wind, flags)\nVALUES ('GUELPH', 2025, 120, 18.50, 6.20, 0.00, 22.40, 55.00, 3.20, 0);
+activate Store
+note over Store
+  <b>Store (SQLite table: reading)</b>
+  Row persisted with primary key:
+  <b>('GUELPH', 2025, 120)</b>
+end note
+Store --> Ingest : Commit transaction (pclose)
+deactivate Ingest
+
+== Phase 2: Batch Orchestration & Deck Generation ==
+
+Orchestrator -> Store : Query historical weather series\n<b>[Data Format: Python sqlite3 cursor execution]</b>\nSELECT doy, tmax, tmin, rain, srad FROM reading WHERE stnid='GUELPH' AND year=2025 ORDER BY doy;
+Store --> Orchestrator : Return weather observations\n<b>[Data Format: SQLite Rows / Python Tuples]</b>\n(120, 18.50, 6.20, 0.00, 22.40), ...
+deactivate Store
+activate Orchestrator
+
+note over Orchestrator
+  <b>Subsystem 2 (Python orchestrator.py & deck.py)</b>
+  1. Creates temporary workspace via tempfile.mkdtemp()
+  2. Retrieves soil/latitude parameters for GUELPH (AWC=0.15, depth=1100mm)
+  3. Formats column-exact input deck MERIDIAN.DAT
+end note
+
+Orchestrator -> Model : Execute simulation subprocess.run(['cropmod'], cwd=scratch)\n<b>[Data Format: Column-exact Fixed-Width ASCII Deck (MERIDIAN.DAT)]</b>\n- REC1 (A8,I4,F8.3): "GUELPH  2025  43.545"\n- REC2 (F8.2,F8.2) : "    0.15 1100.00"\n- DAILY(I3,3F6.1,F6.2): "120  18.5   6.2   0.0 22.40"\n- TERM : " -1"
+activate Model
+
+note over Model
+  <b>Subsystem 3 (FORTRAN cropmod / F77 & F90)</b>
+  1. Reads MERIDIAN.DAT sequentially
+  2. Subroutine WATBAL: Simulates snowpack, runoff, PET, cascading 5-layer soil water
+  3. Subroutine GROWTH: Simulates thermal time, leaf expansion (LAI), biomass & grain yield
+end note
+
+Model -> Output : Write daily and seasonal simulation output\n<b>[Data Format: Column-exact Fixed-Width ASCII File (MERIDIAN.OUT)]</b>\n- Line 1 (Header): MERIDIAN CROPMOD V2.3  STN=GUELPH    YEAR=2025  NDAYS= 180\n- Line 2 (Labels):  DOY      SW      ET   DRAIN    BIOM     LAI\n- Line 3 (Record):  120  182.40   2.150   0.000   120.5   0.450\n- Final  (Summary): YIELD      6.425
+activate Output
+
+Model --> Orchestrator : Simulation terminates (exit code 0 via STOP)
+deactivate Model
+
+== Phase 3: Output Parsing & Forecast Persistence ==
+
+Orchestrator -> Parser : Pass MERIDIAN.OUT for extraction\n<b>[Data Format: Local ASCII file path in scratch directory]</b>
+activate Parser
+
+Parser -> Output : Read lines and apply column slicing
+Output --> Parser : Raw text lines
+deactivate Output
+
+note over Parser
+  <b>Subsystem 2 (parse.py - MRD-143 Fix)</b>
+  Fixed-column slice extraction (avoids whitespace overflow split bugs):
+  - DOY  [0:4]   -> 120
+  - SW   [5:12]  -> 182.40 mm (Soil Water)
+  - ET   [13:20] -> 2.150 mm (Evapotranspiration)
+  - DRAIN[21:28] -> 0.000 mm
+  - BIOM [29:36] -> 120.5 g/m²
+  - LAI  [37:44] -> 0.450
+  - YIELD split  -> 6.425 t/ha
+end note
+
+Parser --> Orchestrator : Return parsed ForecastResult\n<b>[Data Format: In-Memory Python Dataclasses / Dictionaries]</b>
+deactivate Parser
+
+Orchestrator -> Store : Persist seasonal forecast & daily series\n<b>[Data Format: Parameterized SQL INSERT via sqlite3]</b>\n- INSERT OR REPLACE INTO forecast VALUES ('GUELPH', 2025, '2025-05-01T04:00:00', 6.425, 180, 'cropmod V2.3');\n- INSERT OR REPLACE INTO forecast_daily VALUES ('GUELPH', 2025, 120, 182.40, 2.150, 0.000, 120.5, 0.450);
+activate Store
+note over Store
+  <b>Store (SQLite tables: forecast & forecast_daily)</b>
+  Rows persisted and indexed:
+  - forecast_daily: DOY 120 Soil Water = 182.40 mm
+  - forecast: Final Yield = 6.425 t/ha
+end note
+Store --> Orchestrator : Commit complete
+deactivate Orchestrator
+deactivate Store
+
+== Phase 4: API Dispatch & Console Presentation ==
+
+Console -> API : Operator navigates to Guelph series\nHTTP GET /api/series?station=GUELPH&year=2025\n<b>[Data Format: HTTP GET Request / URL Query Parameters]</b>
+activate Console
+activate API
+
+note over API
+  <b>Subsystem 4 (Java 8+ ApiServer / SeriesHandler)</b>
+  Dispatches worker thread from fixed pool (8 threads).
+  Spawns sqlite3 child process to query reading store.
+end note
+
+API -> Store : Query series table via ProcessBuilder\n<b>[Data Format: CLI execution: sqlite3 -json meridian.db "SELECT ..."]</b>
+activate Store
+Store --> API : Stream query results via stdout\n<b>[Data Format: JSON Array String over pipe]</b>\n[{"doy":120,"sw":182.40,"et":2.150,"drain":0.000,"biom":120.5,"lai":0.450}]
+deactivate Store
+
+API --> Console : HTTP 200 OK (Content-Type: application/json, Access-Control-Allow-Origin: *)\n<b>[Data Format: HTTP JSON Payload]</b>\n[{"doy":120,"sw":182.40,"et":2.150,"drain":0.000,"biom":120.5,"lai":0.450}]
+deactivate API
+
+note over Console
+  <b>Subsystem 5 & 6 (Operator Consoles: dashboard / ui-next)</b>
+  - dashboard (jQuery $.ajax): Injects values into HTML table and <div> bar charts
+  - ui-next (React fetch): Binds typed series to SVG line chart (SeriesChart.tsx)
+  <b>Number displayed on console:</b>
+  * Soil Water at DOY 120: <b>182.40 mm</b>
+  * Seasonal Harvest Yield: <b>6.425 t/ha</b>
+end note
+
+Console -> Console : Render metric on display screen\n<b>[Data Format: HTML DOM Table Row & SVG Coordinate Path]</b>
+deactivate Console
+
+@enduml
